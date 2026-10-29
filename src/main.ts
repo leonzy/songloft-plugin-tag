@@ -1,6 +1,7 @@
 /// <reference types="@songloft/plugin-sdk" />
 import { jsonResponse, createRouter, type HTTPRequest, type HTTPResponse } from '@songloft/plugin-sdk';
 import { toSimplified } from './t2s';
+import { registerBrowseRoutes, clearBrowseCache } from './browser';
 import { scrapeSong, doScrape, writeTags, clearCover, ensureBackup, type ScrapeResult } from './scraper';
 import { loadConfig, saveConfig, DEFAULT_CONFIG, searchNetease, searchQQMusic, searchKuGou, searchMiGu, searchKuWo, extractCandidates, type ScraperConfig, type SearchResult } from './sources';
 import { scoreMatch } from './scoring';
@@ -10,6 +11,7 @@ import { cacheCount, cacheClear, cacheCleanup } from './cache';
 import { createSemaphore } from './semaphore';
 
 const router = createRouter();
+registerBrowseRoutes(router);
 
 // ---- SSRF 防护：内网地址拦截 ----
 function isBadHost(url: string): boolean {
@@ -1254,6 +1256,7 @@ async function onDeinit(): Promise<void> {
 }
 
 async function onHTTPRequest(req: HTTPRequest): Promise<HTTPResponse> {
+  if (req.method !== 'GET' && req.method !== 'HEAD') clearBrowseCache();
   return router.handle(req);
 }
 
