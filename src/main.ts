@@ -177,6 +177,13 @@ router.put('/config', async (req) => {
     const current = await loadConfig();
     const merged = { ...current, ...updates };
 
+    for (const [key, label] of [['qqmusic_api_url', 'QQ音乐'], ['netease_api_url', '网易云'], ['kugou_api_url', '酷狗'], ['kuwo_api_url', '酷我']]) {
+      const value = merged[key];
+      if (value && (typeof value !== 'string' || !/^https?:\/\/[^\s/?#]+(?:[/?#]|$)/i.test(value))) {
+        return jsonResponse({ error: `${label}需要完整的 HTTP/HTTPS API 地址，不能填写 API Key` }, 400);
+      }
+    }
+
     // 自动推导开关：有 Key/URL 则开启，清空则关闭
     merged.enable_acoustid = !!(merged.acoustid_api_key);
     merged.enable_netease  = !!(merged.netease_api_url);
