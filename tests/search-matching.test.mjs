@@ -22,6 +22,12 @@ test('reported filename splits track number, spaced underscore, artist and title
     { artist: 'Sea, Sand And Sun', title: 'Arnica Montana' },
   ]);
 });
+
+test('promotional artist tags cannot override the artist and title in the reported filename', () => {
+  assert.deepEqual(candidates('058.宋祖英-浏阳河【玄音Music 无损音质】.flac', {
+    title: '宋祖英-浏阳河', artist: '惠普正版车载音乐',
+  })[0], { artist: '宋祖英', title: '浏阳河' });
+});
 test('download promotion and track numbers are removed without damaging artist underscores', () => {
   assert.deepEqual(candidates('08 Candy_Wind - 青空[抖音：小G音乐][FLAC].flac')[0], { artist: 'Candy_Wind', title: '青空' });
   assert.deepEqual(candidates('221小伙伴 - 遥远的你 (正式版) 抖音：小G音乐.mp3')[0], { artist: '221小伙伴', title: '遥远的你 (正式版)' });

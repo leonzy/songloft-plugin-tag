@@ -393,7 +393,7 @@ export async function searchKuGou(keyword: string, apiUrl: string): Promise<Sear
     sourceId: s.Hash || s.FileHash || undefined,
     release_date: undefined,
     genre: '',
-    year: s.Chapter || '',
+    year: '', // Chapter is not a release year.
     track: s.FileSort ? String(s.FileSort) : '',
     score: 0,
     source: 'kugou',
@@ -429,8 +429,8 @@ export async function searchMiGu(keyword: string): Promise<SearchResult[]> {
     sourceId: s.contentId ? String(s.contentId) : undefined,
     release_date: undefined,
     genre: s.tagNames || '',
-    year: s.copyright ? String(s.copyright) : '',
-    track: s.songId || '',
+    year: '', // copyright is an availability flag, not a release year.
+    track: '', // songId is a service ID, not the album track number.
     score: 0,
     source: 'migu',
   }));

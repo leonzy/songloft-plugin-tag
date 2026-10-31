@@ -2,11 +2,13 @@ export interface Candidate { artist: string; title: string }
 
 const GARBAGE_TITLE = /^(?:trad\s*\d*|track\s*\d*|unknown|audio\s*track\s*\d*|cd\s*track\s*\d*|data\s*track\s*\d*|未知|未命名|\d+)$/i;
 const GARBAGE_ARTIST = /^(?:unknown|various(?: artists)?|未知(?:歌手)?|佚名)$/i;
+const PROMOTIONAL_ARTIST = /(?:车载音乐|正版车载|无损音乐合集|发烧试音|[微Ww][信Xx]\s*[:：])/;
 
 /** Remove release/download noise, preserving meaningful versions such as Live/Remix. */
 export function cleanFilenameNoise(value: string): string {
   return value
     .replace(/[【\[]\s*(?:FLAC|MP3|WAV|APE|WMA|OGG|DSF|320k?(?:bps)?|128k?(?:bps)?|192k?(?:bps)?|256k?(?:bps)?|HQ|SQ|Hi[-\s]?Res|无损|高音质|MV)\s*[】\]]/gi, '')
+    .replace(/[【\[][^】\]\r\n]{0,80}(?:无损音质|高品质音质|无损下载)[^】\]\r\n]*[】\]]/gi, '')
     .replace(/[【\[(（](?:抖音|快手|公众号|微信公众号|下载地址|音乐下载|更多音乐)\s*[:：][^\]】)）]*[\]】)）]/gi, '')
     .replace(/\s+(?:抖音|快手|公众号)\s*[:：].*$/i, '')
     .replace(/\s+/g, ' ').trim();
@@ -22,7 +24,8 @@ function stripTrack(value: string, paired: boolean): string {
 function usableTitle(value: string): string { return GARBAGE_TITLE.test(value) ? '' : value; }
 
 export function extractCandidates(filePath: string, tags?: { artist?: string; title?: string }): Candidate[] {
-  const artist = cleanFilenameNoise(tags?.artist || '');
+  const cleanedArtist = cleanFilenameNoise(tags?.artist || '');
+  const artist = PROMOTIONAL_ARTIST.test(cleanedArtist) ? '' : cleanedArtist;
   const title = cleanFilenameNoise(tags?.title || '');
   if (artist && title && !GARBAGE_ARTIST.test(artist) && (!GARBAGE_TITLE.test(title) || /^\d+$/.test(title))) {
     return [{ artist, title }];
