@@ -161,7 +161,7 @@ export interface SearchResult {
 
 // ---- AcoustID / MusicBrainz ----
 // 使用主程序已计算的 Chromaprint fingerprint，无需插件自行安装 fpcalc。
-export async function searchAcoustid(fingerprint: string, duration: number, apiKey: string): Promise<SearchResult[]> {
+export async function searchAcoustid(fingerprint: string, duration: number, apiKey: string, onDiagnostic?: (reason: string) => void): Promise<SearchResult[]> {
   if (!fingerprint) {
     songloft.log.warn('[acoustid] 歌曲无指纹，降级到文本搜索');
     return [];
@@ -176,12 +176,17 @@ export async function searchAcoustid(fingerprint: string, duration: number, apiK
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'songloft-plugin-tag/1.0',
+        'X-Fetch-Timeout-Ms': '4000',
       },
       body,
-    });
+    }, 0);
 
     const data = await resp.json();
-    if (data.status !== 'ok') return [];
+    if (data.status !== 'ok') {
+      const code = Number(data.error?.code);
+      onDiagnostic?.(`音频指纹：AcoustID 请求失败${Number.isFinite(code) ? `（业务错误码 ${code}${code === 4 ? '：API Key 无效' : ''}）` : ''}`);
+      return [];
+    }
 
     const results: SearchResult[] = [];
     for (const result of (data.results || []).slice(0, 3)) {
@@ -202,6 +207,7 @@ export async function searchAcoustid(fingerprint: string, duration: number, apiK
     }
     return results;
   } catch (e: any) {
+    onDiagnostic?.(`音频指纹：AcoustID 接口失败（${e.message || e}${/HTTP 400/.test(e.message || '') ? '；请检查 AcoustID Key' : ''}），继续文字搜索`);
     songloft.log.warn(`[acoustid] 搜索失败: ${e.message || e}`);
     return [];
   }
@@ -358,7 +364,9 @@ export async function searchNetease(keyword: string, apiUrl: string): Promise<Se
 // ---- QQ 音乐 ----
 export async function searchQQMusic(keyword: string, apiUrl: string): Promise<SearchResult[]> {
   if (!apiUrl || !isHostnameAllowed(apiUrl)) throw new Error('QQ音乐 API 地址不可用');
-  return searchQQ(keyword, apiUrl, fetchWithRetry);
+  return searchQQ(keyword, apiUrl, (url, init) => fetchWithRetry(url, {
+    ...init, headers: { ...init?.headers, 'X-Fetch-Timeout-Ms': '5000' },
+  }, 1));
 }
 
 // ---- 酷狗音乐 ----

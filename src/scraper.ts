@@ -125,7 +125,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
     songloft.log.info(`[scraper] AcoustID 跳过: 歌曲无指纹 (主程序扫描后异步计算，请稍后重试)`);
   } else {
     await rateLimitWait('acoustid');
-    const acoustidResults = await searchAcoustid(song.fingerprint, song.fingerprint_duration || song.duration || 0, cfg.acoustid_api_key);
+    const acoustidResults = await searchAcoustid(song.fingerprint, song.fingerprint_duration || song.duration || 0, cfg.acoustid_api_key, opts?.onDiagnostic);
     if (acoustidResults.length > 0) {
       const best = acoustidResults.reduce((a, b) => a.score > b.score ? a : b);
       if (best.score > cfg.score_threshold) {
