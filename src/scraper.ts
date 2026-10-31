@@ -88,12 +88,6 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
   const candidate = candidates[0];
 
-  if (!candidate.title) {
-    opts?.onDiagnostic?.("无法从歌曲信息或文件名确定搜索关键词");
-    songloft.log.warn(`[scraper] 无法确定搜索关键词: ${songId}`);
-    return null;
-  }
-
   // 缓存字段辅助：entry 带 enriched 标记，避免「源本来就没有 genre」时每次命中都重跑 enrich
   const toCacheEntry = (r: { artist: string; title: string; album: string; cover_url?: string; lyrics?: string; genre?: string; year?: string; track?: string; source: string; score: number }) => ({
     artist: r.artist, title: r.title, album: r.album,
@@ -104,7 +98,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   });
 
   // 检查缓存（强制刮削跳过读取，但仍会写入覆盖旧缓存）
-  if (!opts?.skipCache) {
+  if (candidate.title && !opts?.skipCache) {
     const cached = await cacheGet<SearchResult & { enriched?: boolean }>(candidate.artist, candidate.title);
     if (cached && cached.score >= cfg.score_threshold) {
       songloft.log.info(`[scraper] 缓存命中: ${cached.artist} - ${cached.title} (${cached.score.toFixed(2)})`);
@@ -140,7 +134,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
         best.title = toSimplified(best.title);
         best.album = toSimplified(best.album);
 
-        const enrich = await enrichFromChineseSources(best.artist, best.title, candidate, cfg);
+        const enrich = await enrichFromChineseSources(best.artist, best.title, best, cfg);
         if (enrich.cover_url) {
           best.cover_url = enrich.cover_url;
           songloft.log.info(`[scraper] 封面来自 ${enrich.source}: ${enrich.cover_url.substring(0, 60)}...`);
@@ -151,13 +145,20 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
         if (enrich.track) best.track = enrich.track;
 
         const result = buildResult(songId, best, candidate, {});
-        await cacheSet(candidate.artist, candidate.title, toCacheEntry(result));
+        // 无文字关键词时不能共享空键缓存，避免不同未知歌曲串用识别结果。
+        if (candidate.title) await cacheSet(candidate.artist, candidate.title, toCacheEntry(result));
         return result;
       }
     }
   }
 
   // 3. 文本搜索兜底（多源并发）：先用第一个候选词搜索，若得分不佳且有反向候选则重试
+  if (!candidate.title) {
+    opts?.onDiagnostic?.("音频指纹未能识别，且无法从歌曲信息或文件名确定搜索关键词");
+    songloft.log.warn(`[scraper] 无法确定搜索关键词: ${songId}`);
+    return null;
+  }
+
   let bestResult: ScrapeResult | null = null;
   let bestScore = -1;
 
