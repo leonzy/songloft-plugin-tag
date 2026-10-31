@@ -29,3 +29,13 @@ test('Kugou chapter metadata is never mistaken for a release year', async () => 
   const [result] = await api.searchKuGou('Song', 'https://example.test/search');
   assert.equal(result.year, '');
 });
+
+test('Migu absolute cover URLs are not prefixed with the host a second time', async () => {
+  const api = sources(async () => ({ ok: true, json: async () => ({ songResultData: { result: [
+    { name: 'Song', imgItems: [{ img: 'https://d.musicapp.migu.cn/cover.jpg' }] },
+    { name: 'Song', imgItems: [{ img: '/cover.jpg' }] },
+    { name: 'Song', imgItems: [{ img: '//d.musicapp.migu.cn/cover.jpg' }] },
+  ] } }) }));
+  const result = await api.searchMiGu('Song');
+  assert.ok(result.every(s => s.cover_url === 'https://d.musicapp.migu.cn/cover.jpg'));
+});

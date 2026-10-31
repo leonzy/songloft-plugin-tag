@@ -23,6 +23,7 @@ import { cacheGet, cacheSet } from './cache';
 import { rateLimitWait } from './ratelimit';
 import { circuitFailure, circuitSuccess, circuitIsOpen } from './circuit';
 import { formatSourceDiagnostic, sourceLabel, type SourceDiagnostic } from './scrape-diagnostics';
+import { fingerprintConflicts } from './fingerprint-match';
 
 export interface ScrapeResult {
   songId: number;
@@ -89,6 +90,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
   const candidate = candidates[0];
   let fingerprintCandidate: ScrapeResult | null = null;
+  let fingerprintConflict = false;
 
   // 缓存字段辅助：entry 带 enriched 标记，避免「源本来就没有 genre」时每次命中都重跑 enrich
   const toCacheEntry = (r: { artist: string; title: string; album: string; cover_url?: string; lyrics?: string; genre?: string; year?: string; track?: string; source: string; score: number }) => ({
@@ -102,7 +104,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   // 检查缓存（强制刮削跳过读取，但仍会写入覆盖旧缓存）
   if (candidate.title && !opts?.skipCache) {
     const cached = await cacheGet<SearchResult & { enriched?: boolean }>(candidate.artist, candidate.title);
-    if (cached && cached.score >= cfg.score_threshold) {
+    if (cached && cached.score >= cfg.score_threshold && !(cached.source === 'acoustid' && fingerprintConflicts(candidates, cached))) {
       songloft.log.info(`[scraper] 缓存命中: ${cached.artist} - ${cached.title} (${cached.score.toFixed(2)})`);
       // 旧缓存（无 enriched 标记）补跑一次 enrich 并回写，此后命中不再重复请求
       if (!cached.enriched) {
@@ -129,8 +131,12 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
     const acoustidResults = await searchAcoustid(song.fingerprint, song.fingerprint_duration || song.duration || 0, cfg.acoustid_api_key, opts?.onDiagnostic);
     if (acoustidResults.length > 0) {
       const best = acoustidResults.reduce((a, b) => a.score > b.score ? a : b);
-      if (opts?.allowLowScore) fingerprintCandidate = buildResult(songId, best, candidate, {});
-      if (best.score > cfg.score_threshold) {
+      fingerprintConflict = best.score >= cfg.score_threshold && fingerprintConflicts(candidates, best);
+      if (fingerprintConflict) {
+        opts?.onDiagnostic?.(`音频指纹冲突：指纹相似度 ${Math.round(best.score * 100)} / 100，关联标签为“${best.artist}－${best.title}”，与当前歌曲名或文件名明显不符。该分数不是标签正确率；继续文字搜索，请核对原音频与候选，尚未保存。`);
+      }
+      if (opts?.allowLowScore && !fingerprintConflict) fingerprintCandidate = buildResult(songId, best, candidate, {});
+      if (best.score > cfg.score_threshold && !fingerprintConflict) {
         songloft.log.info(`[scraper] 声纹匹配成功: ${best.artist} - ${best.title} (${best.score.toFixed(2)})`);
 
         best.artist = toSimplified(best.artist);
@@ -269,6 +275,12 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
     for (const [source, value] of Object.entries(diagnostics)) opts?.onDiagnostic?.(formatSourceDiagnostic(source, value, cfg.score_threshold));
     if (bestResult) opts?.onDiagnostic?.(`最佳候选来自${sourceLabel(bestResult.source)}，得分 ${bestScore.toFixed(2)}；${opts?.allowLowScore ? '仅供预览，请人工核对，尚未保存' : '未采用，未保存'}`);
     songloft.log.info(`[scraper] 最佳得分 ${bestScore.toFixed(2)} 低于阈值 ${cfg.score_threshold}，${opts?.allowLowScore && bestResult ? '返回人工预览' : '刮削失败'}`);
+    return opts?.allowLowScore ? bestResult : null;
+  }
+
+  if (fingerprintConflict) {
+    // A strong fingerprint/text disagreement is ambiguous. Manual previews can
+    // show text candidates with the conflict, but batches must never write them.
     return opts?.allowLowScore ? bestResult : null;
   }
 

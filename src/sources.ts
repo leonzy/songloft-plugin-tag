@@ -425,7 +425,10 @@ export async function searchMiGu(keyword: string): Promise<SearchResult[]> {
     artist: (s.singers || []).map((si: any) => si.name).join(',') || '',
     title: s.name || '',
     album: (s.albums || []).map((a: any) => a.name).join(',') || s.album || '',
-    cover_url: s.imgItems?.[s.imgItems.length - 1]?.img ? `https://d.musicapp.migu.cn${s.imgItems[s.imgItems.length - 1].img}` : undefined,
+    cover_url: s.imgItems?.[s.imgItems.length - 1]?.img
+      ? (/^https?:\/\//i.test(s.imgItems[s.imgItems.length - 1].img) ? s.imgItems[s.imgItems.length - 1].img
+        : `https:${s.imgItems[s.imgItems.length - 1].img.startsWith('//') ? '' : '//d.musicapp.migu.cn'}${s.imgItems[s.imgItems.length - 1].img}`)
+      : undefined,
     sourceId: s.contentId ? String(s.contentId) : undefined,
     release_date: undefined,
     genre: s.tagNames || '',

@@ -22,6 +22,7 @@ function harness({ title = '', fingerprint = 'audio-fingerprint', matches = [] }
         searchNetease: async () => { calls.text++; return []; },
       },
       './t2s': { toSimplified: value => value },
+      './fingerprint-match': { fingerprintConflicts: () => false },
       './cache': { cacheGet: async () => { calls.cache++; return null; },
         cacheSet: async () => { calls.cache++; } },
       './ratelimit': { rateLimitWait: async () => {} },
