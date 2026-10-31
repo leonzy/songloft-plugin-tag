@@ -2,6 +2,7 @@
 import { jsonResponse, createRouter, type HTTPRequest, type HTTPResponse } from '@songloft/plugin-sdk';
 import { toSimplified } from './t2s';
 import { registerBrowseRoutes, clearBrowseCache } from './browser';
+import { registerManualScrapeRoutes } from './manual-scrape';
 import { scrapeSong, doScrape, writeTags, clearCover, ensureBackup, type ScrapeResult } from './scraper';
 import { loadConfig, saveConfig, DEFAULT_CONFIG, searchNetease, searchQQMusic, searchKuGou, searchMiGu, searchKuWo, extractCandidates, type ScraperConfig, type SearchResult } from './sources';
 import { scoreMatch } from './scoring';
@@ -12,6 +13,7 @@ import { createSemaphore } from './semaphore';
 
 const router = createRouter();
 registerBrowseRoutes(router);
+registerManualScrapeRoutes(router);
 
 // ---- SSRF 防护：内网地址拦截 ----
 function isBadHost(url: string): boolean {

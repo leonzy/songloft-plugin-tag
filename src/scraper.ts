@@ -44,7 +44,7 @@ export interface ScrapeResult {
 /**
  * 单曲刮削（写入模式）
  */
-export async function scrapeSong(songId: number, config?: ScraperConfig, opts?: { skipCache?: boolean }): Promise<ScrapeResult | null> {
+export async function scrapeSong(songId: number, config?: ScraperConfig, opts?: { skipCache?: boolean; onDiagnostic?: (reason: string) => void }): Promise<ScrapeResult | null> {
   const cfg = config || await loadConfig();
   const result = await doScrape(songId, cfg, opts);
   if (!result) return null;
@@ -59,10 +59,11 @@ export async function scrapeSong(songId: number, config?: ScraperConfig, opts?: 
 // 内部实现
 // ============================================================
 
-export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skipCache?: boolean }): Promise<ScrapeResult | null> {
+export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skipCache?: boolean; onDiagnostic?: (reason: string) => void }): Promise<ScrapeResult | null> {
   // 1. 获取歌曲信息
   const song = await songloft.songs.getById(songId);
   if (!song) {
+    opts?.onDiagnostic?.("歌曲不存在");
     songloft.log.warn(`[scraper] 歌曲不存在: ${songId}`);
     return null;
   }
@@ -70,6 +71,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   // 仅支持本地歌曲：宿主 /tags 对非 local 类型直接 400，搜了也写不进去（批量中计为跳过）
   const songType = (song as any).type || 'local';
   if (songType !== 'local') {
+    opts?.onDiagnostic?.('仅支持本地歌曲');
     songloft.log.info(`[scraper] 跳过非本地歌曲: songId=${songId} (type=${songType})`);
     return null;
   }
@@ -87,6 +89,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   const candidate = candidates[0];
 
   if (!candidate.title) {
+    opts?.onDiagnostic?.("无法从歌曲信息或文件名确定搜索关键词");
     songloft.log.warn(`[scraper] 无法确定搜索关键词: ${songId}`);
     return null;
   }
@@ -123,6 +126,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   if (!cfg.enable_acoustid) {
     songloft.log.info(`[scraper] AcoustID 未启用 (cfg.enable_acoustid=${cfg.enable_acoustid})`);
   } else if (!song.fingerprint) {
+    opts?.onDiagnostic?.("尚无音频指纹，已尝试文本搜索");
     songloft.log.info(`[scraper] AcoustID 跳过: 歌曲无指纹 (主程序扫描后异步计算，请稍后重试)`);
   } else {
     await rateLimitWait('acoustid');
@@ -180,6 +184,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
     const searchWithCircuit = async (fn: (kw: string, url: string) => Promise<SearchResult[]>, url: string, source: string) => {
       if (circuitIsOpen(source)) {
+        opts?.onDiagnostic?.(`${source} 暂因连续失败而停用，请稍后重试`);
         songloft.log.info(`[scraper] ${source} 熔断中，跳过`);
         return { results: [], source };
       }
@@ -187,9 +192,11 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
         await rateLimitWait(source);
         const r = await fn(keyword, url);
         circuitSuccess(source);
+        if (!r.length) opts?.onDiagnostic?.(`${source} 未找到匹配结果`);
         return { results: r, source };
       } catch (e) {
         circuitFailure(source);
+        opts?.onDiagnostic?.(`${source}: ${e instanceof Error ? e.message : String(e)}`);
         throw e;
       }
     };
@@ -210,6 +217,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
       tasks.push(searchWithCircuit(searchKuWo, '', 'kuwo'));
     }
 
+    if (!tasks.length) opts?.onDiagnostic?.("未启用可用的文本刮削源，请检查标签刮削插件的音源设置");
     const settled = await Promise.allSettled(tasks);
     for (const s of settled) {
       if (s.status === 'fulfilled') {
@@ -240,6 +248,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   }
 
   if (!bestResult || bestScore < cfg.score_threshold) {
+    if (bestResult) opts?.onDiagnostic?.(`最佳匹配得分 ${bestScore.toFixed(2)} 低于配置阈值 ${cfg.score_threshold}`);
     songloft.log.info(`[scraper] 最佳得分 ${bestScore.toFixed(2)} 低于阈值 ${cfg.score_threshold}，刮削失败`);
     return null;
   }
