@@ -255,9 +255,10 @@ router.get('/config/status', async (_req) => {
   if (cfg.acoustid_api_key) {
     probes.push((async () => {
       try {
-        const resp = await fetch(
-          `https://api.acoustid.org/v2/lookup?client=${cfg.acoustid_api_key}&duration=1&fingerprint=AQAAzJg8U&meta=recordingids`
-        );
+        const resp = await fetch('https://api.acoustid.org/v2/lookup', {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Fetch-Timeout-Ms': '4000' },
+          body: `client=${encodeURIComponent(cfg.acoustid_api_key)}&duration=1&fingerprint=AQAAzJg8U&meta=recordingids`,
+        });
         const data = await resp.json();
         // status='ok' → 正常；error.code=3(指纹无效,返回400) → key 有效
         result['acoustid'] = data?.status === 'ok' || data?.error?.code === 3;

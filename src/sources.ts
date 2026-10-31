@@ -171,7 +171,7 @@ export async function searchAcoustid(fingerprint: string, duration: number, apiK
     // 使用 POST 避免指纹过长导致 URL 414（Chromaprint base64 指纹长度与歌曲时长成正比）
     const body = `client=${encodeURIComponent(apiKey)}&duration=${Math.round(duration)}&fingerprint=${encodeURIComponent(fingerprint)}&meta=recordingids`;
 
-    const resp = await fetchWithRetry('https://api.acoustid.org/v2/lookup', {
+    const resp = await fetch('https://api.acoustid.org/v2/lookup', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -179,14 +179,19 @@ export async function searchAcoustid(fingerprint: string, duration: number, apiK
         'X-Fetch-Timeout-Ms': '4000',
       },
       body,
-    }, 0);
+    });
 
-    const data = await resp.json();
+    let data: any;
+    try { data = await resp.json(); }
+    catch { throw new Error(`HTTP ${resp.status}，服务未返回有效 JSON`); }
     if (data.status !== 'ok') {
       const code = Number(data.error?.code);
-      onDiagnostic?.(`音频指纹：AcoustID 请求失败${Number.isFinite(code) ? `（业务错误码 ${code}${code === 4 ? '：API Key 无效' : ''}）` : ''}`);
+      onDiagnostic?.(code === 4
+        ? '音频指纹：AcoustID 应用 API Key 无效（错误码 4）。请填写注册应用获得的 Application API Key，不是账户的 User API Key；继续文字搜索'
+        : `音频指纹：AcoustID 请求失败（HTTP ${resp.status}${Number.isFinite(code) ? `，业务错误码 ${code}` : ''}），继续文字搜索`);
       return [];
     }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
     const results: SearchResult[] = [];
     for (const result of (data.results || []).slice(0, 3)) {

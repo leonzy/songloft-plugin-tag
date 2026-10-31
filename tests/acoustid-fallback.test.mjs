@@ -26,7 +26,15 @@ test('AcoustID uses a bounded timeout, makes one failed request and permits text
 
 test('AcoustID rejected credentials produce an actionable separate diagnostic', async () => {
   const reasons = [];
-  const sources = load(async () => ({ ok: false, status: 400 }));
+  const sources = load(async () => ({ ok: false, status: 400, json: async () => ({ status: 'error', error: { code: 4, message: 'invalid API key' } }) }));
   assert.equal((await sources.searchAcoustid('fingerprint', 100, 'test', r => reasons.push(r))).length, 0);
-  assert.match(reasons.join(' '), /HTTP 400.*检查 AcoustID Key/);
+  assert.match(reasons.join(' '), /应用 API Key 无效.*错误码 4.*Application API Key.*User API Key/);
+});
+
+test('AcoustID malformed input errors remain distinct from invalid credentials', async () => {
+  const reasons = [];
+  const sources = load(async () => ({ ok: false, status: 400, json: async () => ({ status: 'error', error: { code: 3 } }) }));
+  await sources.searchAcoustid('fingerprint', 100, 'test', r => reasons.push(r));
+  assert.match(reasons.join(' '), /HTTP 400，业务错误码 3/);
+  assert.doesNotMatch(reasons.join(' '), /Key 无效/);
 });
