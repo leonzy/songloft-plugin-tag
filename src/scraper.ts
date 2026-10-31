@@ -60,7 +60,7 @@ export async function scrapeSong(songId: number, config?: ScraperConfig, opts?: 
 // 内部实现
 // ============================================================
 
-export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skipCache?: boolean; onDiagnostic?: (reason: string) => void }): Promise<ScrapeResult | null> {
+export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skipCache?: boolean; allowLowScore?: boolean; onDiagnostic?: (reason: string) => void }): Promise<ScrapeResult | null> {
   // 1. 获取歌曲信息
   const song = await songloft.songs.getById(songId);
   if (!song) {
@@ -88,6 +88,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   }
 
   const candidate = candidates[0];
+  let fingerprintCandidate: ScrapeResult | null = null;
 
   // 缓存字段辅助：entry 带 enriched 标记，避免「源本来就没有 genre」时每次命中都重跑 enrich
   const toCacheEntry = (r: { artist: string; title: string; album: string; cover_url?: string; lyrics?: string; genre?: string; year?: string; track?: string; source: string; score: number }) => ({
@@ -128,6 +129,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
     const acoustidResults = await searchAcoustid(song.fingerprint, song.fingerprint_duration || song.duration || 0, cfg.acoustid_api_key, opts?.onDiagnostic);
     if (acoustidResults.length > 0) {
       const best = acoustidResults.reduce((a, b) => a.score > b.score ? a : b);
+      if (opts?.allowLowScore) fingerprintCandidate = buildResult(songId, best, candidate, {});
       if (best.score > cfg.score_threshold) {
         songloft.log.info(`[scraper] 声纹匹配成功: ${best.artist} - ${best.title} (${best.score.toFixed(2)})`);
 
@@ -155,13 +157,14 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
   // 3. 文本搜索兜底（多源并发）：先用第一个候选词搜索，若得分不佳且有反向候选则重试
   if (!candidate.title) {
+    if (fingerprintCandidate) return fingerprintCandidate;
     opts?.onDiagnostic?.("音频指纹未能识别，且无法从歌曲信息或文件名确定搜索关键词");
     songloft.log.warn(`[scraper] 无法确定搜索关键词: ${songId}`);
     return null;
   }
 
-  let bestResult: ScrapeResult | null = null;
-  let bestScore = -1;
+  let bestResult: ScrapeResult | null = fingerprintCandidate;
+  let bestScore = fingerprintCandidate?.score ?? -1;
   const diagnostics: Record<string, SourceDiagnostic> = {};
 
   for (let ci = 0; ci < candidates.length; ci++) {
@@ -196,7 +199,17 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
       }
       try {
         await rateLimitWait(source);
-        const r = await fn(keyword, url);
+        let r: SearchResult[];
+        try {
+          r = await fn(keyword, url);
+        } catch (error) {
+          // QQ may reject a combined query (e.g. damaged artist tags). Retry
+          // once with the title; retain the original artist for match scoring.
+          if (source !== 'qqmusic' || !/业务错误码 2001\b/.test(error instanceof Error ? error.message : String(error)) || !c.title || keyword === c.title) throw error;
+          opts?.onDiagnostic?.('QQ音乐：组合搜索返回业务错误码 2001，已改用歌名重试');
+          await rateLimitWait(source);
+          r = await fn(c.title, url);
+        }
         circuitSuccess(source);
         return { results: r, source };
       } catch (e) {
@@ -254,9 +267,9 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
   if (!bestResult || bestScore < cfg.score_threshold) {
     for (const [source, value] of Object.entries(diagnostics)) opts?.onDiagnostic?.(formatSourceDiagnostic(source, value, cfg.score_threshold));
-    if (bestResult) opts?.onDiagnostic?.(`最佳候选来自${sourceLabel(bestResult.source)}，得分 ${bestScore.toFixed(2)}；未采用，未保存`);
-    songloft.log.info(`[scraper] 最佳得分 ${bestScore.toFixed(2)} 低于阈值 ${cfg.score_threshold}，刮削失败`);
-    return null;
+    if (bestResult) opts?.onDiagnostic?.(`最佳候选来自${sourceLabel(bestResult.source)}，得分 ${bestScore.toFixed(2)}；${opts?.allowLowScore ? '仅供预览，请人工核对，尚未保存' : '未采用，未保存'}`);
+    songloft.log.info(`[scraper] 最佳得分 ${bestScore.toFixed(2)} 低于阈值 ${cfg.score_threshold}，${opts?.allowLowScore && bestResult ? '返回人工预览' : '刮削失败'}`);
+    return opts?.allowLowScore ? bestResult : null;
   }
 
   // 写入缓存（文本搜索结果自带 genre/year/track，视为已补全）

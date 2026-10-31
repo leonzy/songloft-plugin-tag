@@ -11,10 +11,10 @@ function module(name, dependencies = {}, globals = {}) {
   return context.exports;
 }
 
-async function run(qq) {
+async function run(qq, allowLowScore = false) {
   const queries = [], reasons = [];
   const scraper = module('scraper', {
-    './sources': { ...module('candidates'), searchQQMusic: async kw => { queries.push(kw); return qq(); },
+    './sources': { ...module('candidates'), searchQQMusic: async kw => { queries.push(kw); return qq(kw); },
       searchMiGu: async () => [{ artist: 'Different artist', title: 'Different song', source: 'migu' }] },
     './scoring': { scoreMatch: () => 0.26 },
     './t2s': { toSimplified: s => s },
@@ -23,9 +23,10 @@ async function run(qq) {
     './circuit': { circuitIsOpen: () => false, circuitSuccess() {}, circuitFailure() {} },
     './scrape-diagnostics': module('scrape-diagnostics'),
   }, { songloft: { songs: { getById: async () => ({ type: 'local', file_path: '07.Arnica Montana _ Sea, Sand And Sun.wav' }) }, log: { info() {}, warn() {} } } });
-  assert.equal(await scraper.doScrape(42, { enable_qqmusic: true, qqmusic_api_url: 'https://example.test', enable_migu: true, score_threshold: 0.7 },
-    { skipCache: true, onDiagnostic: r => reasons.push(r) }), null);
-  return { queries, reasons };
+  const result = await scraper.doScrape(42, { enable_qqmusic: true, qqmusic_api_url: 'https://example.test', enable_migu: true, score_threshold: 0.7 },
+    { skipCache: true, allowLowScore, onDiagnostic: r => reasons.push(r) });
+  if (!allowLowScore) assert.equal(result, null);
+  return { queries, reasons, result };
 }
 
 test('engine reports QQ failure and Migu score on separate lines across reversed queries', async () => {
@@ -36,6 +37,22 @@ test('engine reports QQ failure and Migu score on separate lines across reversed
   assert.match(reasons.join('\n'), /QQ音乐：接口失败.*500001/);
   assert.match(reasons.join('\n'), /咪咕：候选最高得分 0.26，低于阈值 0.70/);
   assert.match(reasons.join('\n'), /最佳候选来自咪咕/);
+});
+
+test('manual preview returns low-score candidates while automatic scraping still rejects them', async () => {
+  const { result } = await run(() => [], true);
+  assert.equal(result.score, 0.26);
+  assert.equal(result.source, 'migu');
+  assert.equal((await run(() => [])).result, null);
+});
+
+test('QQ business error 2001 retries once with title while preserving diagnostics', async () => {
+  const { queries, reasons } = await run(kw => {
+    if (kw.includes('Arnica Montana ') || kw.startsWith('Sea, Sand And Sun ')) throw new Error('QQ音乐搜索业务错误码 2001');
+    return [];
+  });
+  assert.deepEqual(queries.slice(0, 2), ['Arnica Montana Sea, Sand And Sun', 'Sea, Sand And Sun']);
+  assert.ok(reasons.some(r => r.includes('已改用歌名重试')));
 });
 
 test('engine distinguishes an empty successful QQ search from low-scoring Migu candidates', async () => {

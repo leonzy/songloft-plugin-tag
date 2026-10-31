@@ -18,14 +18,15 @@ function harness(scrape) {
 }
 
 test('prepare calls read-only engine and returns result without auto-save', async () => {
-  const preview = { songId: 42, title: 'match' };
+  const preview = { songId: 42, title: 'match', score: 0.49 };
   const run = harness(async (id, cfg, opts) => {
     assert.equal(id, 42); assert.equal(cfg.score_threshold, 0.8); assert.equal(opts.skipCache, true);
+    assert.equal(opts.allowLowScore, true);
     return preview;
   });
   const response = await run(42);
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(JSON.parse(response.body), { result: preview });
+  assert.deepEqual(JSON.parse(response.body), { result: { ...preview, score_threshold: 0.8, below_threshold: true, diagnostics: [] } });
 });
 
 test('failed scrape preserves source reasons and removes credentials', async () => {

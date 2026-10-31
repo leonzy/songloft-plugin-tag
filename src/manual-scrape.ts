@@ -17,14 +17,17 @@ export function registerManualScrapeRoutes(router: { post: (path: string, handle
     if (!Number.isSafeInteger(id) || id <= 0) return jsonResponse({ error: '无效的歌曲 ID' }, 400);
     const reasons: string[] = [];
     try {
-      const result = await doScrape(id, await loadConfig(), {
+      const config = await loadConfig();
+      const result = await doScrape(id, config, {
         skipCache: true,
+        allowLowScore: true,
         onDiagnostic: reason => reasons.push(safeScrapeReason(reason)),
       });
       if (!result) {
         return jsonResponse({ error: '刮削未成功', detail: [...new Set(reasons)].join('\n') || '所有已启用的刮削源均无匹配结果' }, 422);
       }
-      return jsonResponse({ result });
+      return jsonResponse({ result: { ...result, score_threshold: config.score_threshold,
+        below_threshold: result.score < config.score_threshold, diagnostics: [...new Set(reasons)] } });
     } catch (error) {
       return jsonResponse({ error: '刮削失败', detail: safeScrapeReason(error) }, 502);
     }
