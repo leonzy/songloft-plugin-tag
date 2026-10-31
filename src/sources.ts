@@ -8,6 +8,24 @@ import { circuitIsOpen, circuitSuccess, circuitFailure } from './circuit';
 // ============================================================
 
 import { scoreMatch, setScoreWeights } from './scoring';
+import { toSimplified } from './t2s';
+
+const identityText = (value: string) => toSimplified(value).toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '');
+
+export function sameLyricSong(expected: { artist: string; title: string }, found: { artist: string; title: string }): boolean {
+  if (!expected.artist || !expected.title || !found.artist || !found.title) return false;
+  if (identityText(expected.title) !== identityText(found.title)) return false;
+  const names = (value: string) => value.split(/\s*(?:\/|、|;|；|&|＆)\s*/).map(identityText).filter(Boolean);
+  return identityText(expected.artist) === identityText(found.artist) || names(expected.artist).every(name => names(found.artist).includes(name));
+}
+
+export function lyricsIdentityMatches(text: string, expected: { artist: string; title: string }): boolean {
+  const title = text.match(/\[ti:([^\]]+)\]/i)?.[1]?.trim();
+  const artist = text.match(/\[ar:([^\]]+)\]/i)?.[1]?.trim();
+  // Missing LRC headers are common; explicit conflicting headers are never safe.
+  return (!title || identityText(title) === identityText(expected.title)) &&
+    (!artist || sameLyricSong(expected, { artist, title: expected.title }));
+}
 
 import { ModeOfOperation, utils } from 'aes-js';
 
@@ -640,18 +658,25 @@ async function fetchLyricsKuGou(hash: string, albumId?: string): Promise<string>
 }
 
 /** 根据搜索结果拉歌词 */
-async function fetchLyricsForResult(r: SearchResult): Promise<string> {
+async function fetchLyricsForResult(r: SearchResult, onDiagnostic?: (reason: string) => void): Promise<string> {
   if (!r.sourceId) return '';
+  let lyrics = '';
   switch (r.source) {
     case 'netease':
-      return fetchLyricsNetease(r.sourceId);
+      lyrics = await fetchLyricsNetease(r.sourceId); break;
     case 'qqmusic':
-      return fetchLyricsQQ(r.sourceId);
+      lyrics = await fetchLyricsQQ(r.sourceId); break;
     case 'kugou':
-      return fetchLyricsKuGou(r.sourceId);
+      lyrics = await fetchLyricsKuGou(r.sourceId); break;
     default:
       return '';
   }
+  if (lyrics && !lyricsIdentityMatches(lyrics, r)) {
+    songloft.log.warn(`[enrich] 丢弃歌词：${r.source} 的歌词标题或歌手与候选不符`);
+    onDiagnostic?.('歌词补充：来源返回的歌词标题或歌手与候选不符，已丢弃');
+    return '';
+  }
+  return lyrics;
 }
 
 // ============================================================
@@ -675,7 +700,8 @@ export async function enrichFromChineseSources(
   artist: string,
   title: string,
   candidate: { artist: string; title: string },
-  cfg: ScraperConfig
+  cfg: ScraperConfig,
+  onDiagnostic?: (reason: string) => void
 ): Promise<EnrichResult> {
   songloft.log.info(`[enrich] 开始 enrichment: ${artist} - ${title}`);
   const keyword = `${artist} ${title}`.trim();
@@ -726,10 +752,14 @@ export async function enrichFromChineseSources(
 
   await Promise.allSettled(enrichTasks);
 
+  // Search providers may match an album name rather than the track. Scores
+  // and a matching performer alone cannot authorize unrelated enrichments.
+  const matchingResults = allResults.filter(result => sameLyricSong(candidate, result));
+
   // 选最高分
   let best: SearchResult | null = null;
   let bestScore = -1;
-  for (const r of allResults) {
+  for (const r of matchingResults) {
     if (r.score > bestScore) {
       bestScore = r.score;
       best = r;
@@ -737,6 +767,7 @@ export async function enrichFromChineseSources(
   }
 
   if (!best) {
+    onDiagnostic?.(allResults.length ? '歌词补充：没有歌名、歌手均一致的候选，未采用其他歌曲的歌词' : '歌词补充：来源没有返回可用候选');
     songloft.log.info('[enrich] 国内源无匹配，封面/歌词留空');
     return {};
   }
@@ -746,7 +777,7 @@ export async function enrichFromChineseSources(
   // 如果最佳结果没有封面，从其他结果中找有封面的
   let coverUrl = best.cover_url;
   if (!coverUrl) {
-    for (const r of allResults) {
+    for (const r of matchingResults) {
       if (r.cover_url) {
         coverUrl = r.cover_url;
         songloft.log.info(`[enrich] 最佳结果无封面，fallback 到 ${r.source} 的封面`);
@@ -759,7 +790,7 @@ export async function enrichFromChineseSources(
   let lyrics = '';
   if (best.sourceId) {
     try {
-      lyrics = await fetchLyricsForResult(best);
+      lyrics = await fetchLyricsForResult(best, onDiagnostic);
       if (lyrics) {
         songloft.log.info(`[enrich] 歌词下载成功 (${best.source}, ${lyrics.length} 字)`);
       }
@@ -769,10 +800,10 @@ export async function enrichFromChineseSources(
   }
   // 多源兜底
   if (!lyrics) {
-    for (const r of allResults) {
+    for (const r of matchingResults) {
       if (r.source === best.source || !r.sourceId) continue;
       try {
-        lyrics = await fetchLyricsForResult(r);
+        lyrics = await fetchLyricsForResult(r, onDiagnostic);
         if (lyrics) {
           songloft.log.info(`[enrich] 歌词兜底成功 (${r.source}, ${lyrics.length} 字)`);
           break;

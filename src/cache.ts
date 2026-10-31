@@ -4,7 +4,8 @@
 // 结果缓存 — 24 小时本地 KV 缓存，避免重复请求
 // ============================================================
 
-const CACHE_KEY_PREFIX = 'scrape_cache_';
+// v2 excludes earlier enrichments that could borrow lyrics from unrelated tracks.
+const CACHE_KEY_PREFIX = 'scrape_cache_v2_';
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 小时
 
 interface CacheEntry {

@@ -108,7 +108,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
       songloft.log.info(`[scraper] 缓存命中: ${cached.artist} - ${cached.title} (${cached.score.toFixed(2)})`);
       // 旧缓存（无 enriched 标记）补跑一次 enrich 并回写，此后命中不再重复请求
       if (!cached.enriched) {
-        const enrich = await enrichFromChineseSources(cached.artist, cached.title, candidate, cfg);
+        const enrich = await enrichFromChineseSources(cached.artist, cached.title, candidate, cfg, opts?.onDiagnostic);
         if (enrich.genre) cached.genre = enrich.genre;
         if (enrich.year) cached.year = enrich.year;
         if (enrich.track) cached.track = enrich.track;
@@ -143,7 +143,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
         best.title = toSimplified(best.title);
         best.album = toSimplified(best.album);
 
-        const enrich = await enrichFromChineseSources(best.artist, best.title, best, cfg);
+        const enrich = await enrichFromChineseSources(best.artist, best.title, best, cfg, opts?.onDiagnostic);
         if (enrich.cover_url) {
           best.cover_url = enrich.cover_url;
           songloft.log.info(`[scraper] 封面来自 ${enrich.source}: ${enrich.cover_url.substring(0, 60)}...`);
