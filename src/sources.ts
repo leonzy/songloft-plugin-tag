@@ -1,4 +1,5 @@
 /// <reference types="@songloft/plugin-sdk" />
+import { searchQQ } from './qq-search';
 import { rateLimitWait } from './ratelimit';
 import { circuitIsOpen, circuitSuccess, circuitFailure } from './circuit';
 
@@ -356,32 +357,8 @@ export async function searchNetease(keyword: string, apiUrl: string): Promise<Se
 
 // ---- QQ 音乐 ----
 export async function searchQQMusic(keyword: string, apiUrl: string): Promise<SearchResult[]> {
-  if (!apiUrl || !isHostnameAllowed(apiUrl)) return [];
-  const resp = await fetchWithRetry(
-    `${apiUrl}?w=${encodeURIComponent(keyword)}&format=json&n=3`,
-    {
-      headers: {
-        'Referer': 'https://y.qq.com',
-        'User-Agent': 'Mozilla/5.0',
-      },
-    }
-  );
-
-  const data = await resp.json();
-  const songs = data?.data?.song?.list || [];
-  return songs.map((s: any) => ({
-    artist: s.singer?.[0]?.name || '',
-    title: s.songname || '',
-    album: s.albumname || '',
-    cover_url: s.albummid ? `https://y.gtimg.cn/music/photo_new/T002R500x500M000${s.albummid}.jpg` : undefined,
-    sourceId: s.songmid || undefined,
-    release_date: undefined,
-    genre: '',
-    year: '',
-    track: s.index ? String(s.index) : '',
-    score: 0,
-    source: 'qqmusic',
-  }));
+  if (!apiUrl || !isHostnameAllowed(apiUrl)) throw new Error('QQ音乐 API 地址不可用');
+  return searchQQ(keyword, apiUrl, fetchWithRetry);
 }
 
 // ---- 酷狗音乐 ----
@@ -806,77 +783,7 @@ export async function enrichFromChineseSources(
   };
 }
 
-// ---- 辅助：从文件名提取候选标签 ----
-// CD 翻录歌曲常见垃圾元数据：优先用文件名
-const GARBAGE_TITLE = /^(?:trad|track|unknown|audio\s*track|cd\s*track|data\s*track|\d+)$/i;
-const GARBAGE_ARTIST = /^(?:unknown|various|未知|佚名)$/i;
-
-export function extractCandidate(filePath: string, existingTags?: { artist?: string; title?: string }): { artist: string; title: string } {
-  // 清洗 DB 元数据
-  if (existingTags?.artist && existingTags?.title) {
-    const art = cleanFilenameNoise(existingTags.artist);
-    const tit = cleanFilenameNoise(existingTags.title);
-    // CD 翻录的垃圾元数据（如标题是"Track 01"、"trad 1"），退回到文件名提取
-    if (!GARBAGE_TITLE.test(tit) && !GARBAGE_ARTIST.test(art)) {
-      return { artist: art, title: tit };
-    }
-  }
-
-  // 从文件名提取 "艺术家 - 歌名" 或 "歌名 - 艺术家" 模式
-  const fileName = cleanFilenameNoise(
-    filePath.replace(/^.*[/\\]/, '').replace(/\.[^.]+$/, '')
-  );
-
-  const match = fileName.match(/^(.+?)\s*-\s*(.+?)(?:\s*\(.*?\))?\s*$/);
-  if (match) {
-    return { artist: cleanFilenameNoise(match[1]), title: cleanFilenameNoise(match[2]) };
-  }
-
-  return { artist: '', title: fileName };
-}
-
-/**
- * 返回文件名的两种候选排序（artist-title 和 title-artist），
- * 供 doScrape 在得分不佳时尝试反向排序。
- * 若文件名不含分隔符或无 DB 元数据，则只返回一种。
- */
-export function extractCandidates(filePath: string, existingTags?: { artist?: string; title?: string }): { artist: string; title: string }[] {
-  // 有有效 DB 元数据时只返回一种
-  if (existingTags?.artist && existingTags?.title) {
-    const art = cleanFilenameNoise(existingTags.artist);
-    const tit = cleanFilenameNoise(existingTags.title);
-    if (!GARBAGE_TITLE.test(tit) && !GARBAGE_ARTIST.test(art)) {
-      return [{ artist: art, title: tit }];
-    }
-  }
-
-  const fileName = cleanFilenameNoise(
-    filePath.replace(/^.*[/\\]/, '').replace(/\.[^.]+$/, '')
-  );
-
-  const match = fileName.match(/^(.+?)\s*-\s*(.+?)(?:\s*\(.*?\))?\s*$/);
-  if (match) {
-    const a = cleanFilenameNoise(match[1]);
-    const b = cleanFilenameNoise(match[2]);
-    // 两种排序：正常 (a - b) 和反向 (b - a)，去重
-    const primary = { artist: a, title: b };
-    const reversed = { artist: b, title: a };
-    if (a === b) return [primary];
-    return [primary, reversed];
-  }
-
-  return [{ artist: '', title: fileName }];
-}
-
-/** 剥离音质/版本标签，提高搜索匹配率 */
-function cleanFilenameNoise(s: string): string {
-  return s
-    .replace(/\[(?:FLAC|MP3|WAV|APE|WMA|OGG|320k?|128k?|192k?|256k?|HQ|SQ|Hi[-\s]?Res|无损|高音质|MV)\]/gi, '')
-    .replace(/\((?:Live|Remix|Cover|伴奏|纯音乐|Instrumental|Acoustic|Demo|Bonus\s?Track)\)/gi, '')
-    .replace(/\s*(?:feat\.?|ft\.?)\s*.+?(?:\s*[-–—]\s*|$)/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+export { extractCandidate, extractCandidates } from './candidates';
 
 // ---- 从配置读取/保存 ----
 const CONFIG_KEY = 'scraper_config';

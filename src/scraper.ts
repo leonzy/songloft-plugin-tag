@@ -22,6 +22,7 @@ import { toSimplified } from './t2s';
 import { cacheGet, cacheSet } from './cache';
 import { rateLimitWait } from './ratelimit';
 import { circuitFailure, circuitSuccess, circuitIsOpen } from './circuit';
+import { formatSourceDiagnostic, sourceLabel, type SourceDiagnostic } from './scrape-diagnostics';
 
 export interface ScrapeResult {
   songId: number;
@@ -161,6 +162,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
   let bestResult: ScrapeResult | null = null;
   let bestScore = -1;
+  const diagnostics: Record<string, SourceDiagnostic> = {};
 
   for (let ci = 0; ci < candidates.length; ci++) {
     const c = candidates[ci];
@@ -178,6 +180,9 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
         if (s > srcBestScore) srcBestScore = s;
       }
       sourceScores[sourceName] = srcBestScore;
+      const previous = diagnostics[sourceName];
+      diagnostics[sourceName] = { count: Math.max(previous?.count || 0, results.length),
+        score: Math.max(previous?.score || 0, srcBestScore), error: previous?.error };
       allResults.push(...results);
     };
 
@@ -185,7 +190,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
     const searchWithCircuit = async (fn: (kw: string, url: string) => Promise<SearchResult[]>, url: string, source: string) => {
       if (circuitIsOpen(source)) {
-        opts?.onDiagnostic?.(`${source} 暂因连续失败而停用，请稍后重试`);
+        diagnostics[source] = { ...(diagnostics[source] || { count: 0, score: 0 }), error: '因连续失败暂时停用，请稍后重试' };
         songloft.log.info(`[scraper] ${source} 熔断中，跳过`);
         return { results: [], source };
       }
@@ -193,11 +198,10 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
         await rateLimitWait(source);
         const r = await fn(keyword, url);
         circuitSuccess(source);
-        if (!r.length) opts?.onDiagnostic?.(`${source} 未找到匹配结果`);
         return { results: r, source };
       } catch (e) {
         circuitFailure(source);
-        opts?.onDiagnostic?.(`${source}: ${e instanceof Error ? e.message : String(e)}`);
+        diagnostics[source] = { ...(diagnostics[source] || { count: 0, score: 0 }), error: e instanceof Error ? e.message : String(e) };
         throw e;
       }
     };
@@ -249,7 +253,8 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   }
 
   if (!bestResult || bestScore < cfg.score_threshold) {
-    if (bestResult) opts?.onDiagnostic?.(`最佳匹配得分 ${bestScore.toFixed(2)} 低于配置阈值 ${cfg.score_threshold}`);
+    for (const [source, value] of Object.entries(diagnostics)) opts?.onDiagnostic?.(formatSourceDiagnostic(source, value, cfg.score_threshold));
+    if (bestResult) opts?.onDiagnostic?.(`最佳候选来自${sourceLabel(bestResult.source)}，得分 ${bestScore.toFixed(2)}；未采用，未保存`);
     songloft.log.info(`[scraper] 最佳得分 ${bestScore.toFixed(2)} 低于阈值 ${cfg.score_threshold}，刮削失败`);
     return null;
   }

@@ -173,7 +173,10 @@ export function scoreMatch(
 
   const artistSim = sequenceSimilarity(artistCand, artistRes);
   const titleSim = sequenceSimilarity(titleCand, titleRes);
-  let rawScore = W_ARTIST * artistSim + W_TITLE * titleSim;
+  // Missing input fields are unknown, not mismatches.
+  const availableWeight = (artistCand ? W_ARTIST : 0) + (titleCand ? W_TITLE : 0);
+  if (!availableWeight) return 0;
+  let rawScore = ((artistCand ? W_ARTIST * artistSim : 0) + (titleCand ? W_TITLE * titleSim : 0)) / availableWeight;
   const weight = SOURCE_WEIGHTS[result.source] || 0.8;
   let score = rawScore * weight;
 
