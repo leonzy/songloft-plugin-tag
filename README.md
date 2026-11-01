@@ -202,3 +202,9 @@
 ### 最后唠叨一句
 
 如果你用这插件搞音乐下载/传播，先确认 API 有正版授权！
+
+## 手动刮削候选（Roomtone）
+
+宿主的手动刮削预览返回各已启用来源的候选（每源最多 5 条）、来源诊断与独立分数类型。AcoustID 分数表示音频指纹相似度，不代表关联标签正确率；与可靠文字信息冲突的结果保留给人工核对，批量自动刮削仍拒绝冲突写入。问号/乱码占位不视为可靠歌曲名。缺少关键词时，可用无冲突的高置信指纹身份继续查询文本源；仅点击保存后写入标签。
+
+English: Manual previews expose up to five candidates per enabled source, source diagnostics and separate fingerprint/text score kinds. Conflicting fingerprint labels remain available for explicit human review; automatic batches still abstain. Placeholder names do not veto fingerprints. Strong, non-conflicting identification can supply missing text-search keywords. Preparing/selecting candidates does not write tags.

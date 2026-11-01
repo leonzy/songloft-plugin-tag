@@ -50,3 +50,13 @@ test('invalid song IDs never invoke a scraper', async () => {
   const run = harness(() => assert.fail('must not scrape'));
   assert.equal((await run('42oops')).statusCode, 400);
 });
+
+test('candidate diagnostics redact source credentials before returning to the browser', async () => {
+  const response = await harness(async (_id, _cfg, opts) => {
+    assert.equal(opts.includeCandidates, true);
+    return { songId: 42, title: 'found', score: 1, source_diagnostics: { qqmusic: { count: 0, score: 0, error: 'HTTP 503 https://private.test/?token=secret api_key=hidden' } } };
+  })(42);
+  assert.equal(response.statusCode, 200);
+  assert.doesNotMatch(response.body, /private\.test|secret|hidden/);
+  assert.match(response.body, /HTTP 503/);
+});

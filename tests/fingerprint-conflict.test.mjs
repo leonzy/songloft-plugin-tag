@@ -21,7 +21,7 @@ test('fingerprint confidence cannot override complete disagreement with known la
   assert.equal(conflicts.fingerprintConflicts([{ artist: '', title: '' }], wrong), false);
 });
 
-async function run({ manual = true, cached = null } = {}) {
+async function run({ manual = true, cached = null, includeCandidates = false } = {}) {
   const reasons = []; let textQueries = 0, writes = 0;
   const scraper = load('scraper', {
     './fingerprint-match': conflicts, './scoring': scoring, './scrape-diagnostics': load('scrape-diagnostics'),
@@ -32,7 +32,7 @@ async function run({ manual = true, cached = null } = {}) {
     './ratelimit': { rateLimitWait: async () => {} }, './circuit': { circuitIsOpen: () => false, circuitFailure() {}, circuitSuccess() {} },
   }, { songloft: { songs: { getById: async () => ({ type: 'local', fingerprint: 'test', duration: 292 }) }, log: { info() {}, warn() {} } } });
   const result = await scraper.doScrape(42, { enable_acoustid: true, enable_qqmusic: true, qqmusic_api_url: 'https://example.test', score_threshold: 0.7 },
-    { allowLowScore: manual, onDiagnostic: s => reasons.push(s) });
+    { allowLowScore: manual, includeCandidates, onDiagnostic: s => reasons.push(s) });
   return { result, reasons, textQueries, writes };
 }
 
@@ -51,4 +51,39 @@ test('automatic scraping abstains on strong fingerprint/text conflicts even with
 test('old high-score conflicting AcoustID caches are bypassed', async () => {
   const { result, textQueries } = await run({ cached: wrong });
   assert.equal(result.title, original.title); assert.equal(textQueries, 1);
+});
+
+test('manual candidate API retains conflicting fingerprint labels for explicit selection', async () => {
+  const { result, writes } = await run({ includeCandidates: true });
+  const fingerprint = result.candidates.find(c => c.source === 'acoustid');
+  assert.equal(fingerprint.title, wrong.title);
+  assert.equal(fingerprint.score, 0.99);
+  assert.equal(fingerprint.score_kind, 'fingerprint');
+  assert.equal(fingerprint.fingerprint_conflict, true);
+  assert.equal(result.candidates.some(c => c.source === 'qqmusic'), true);
+  assert.equal(result.source_diagnostics.acoustid.count, 1);
+  assert.equal(writes, 0);
+});
+
+test('question-mark placeholders cannot veto audio identification', () => {
+  const candidates = load('candidates');
+  const parsed = candidates.extractCandidates('/music/01.??.flac', { artist: '???', title: '??' });
+  assert.equal(parsed[0].title, '');
+  assert.equal(conflicts.fingerprintConflicts(parsed, original), false);
+  assert.equal(conflicts.fingerprintConflicts([{artist:'???',title:'???? (Inst.)'}], original), false);
+});
+
+test('manual unknown-song lookup uses a strong fingerprint identity to query other sources', async () => {
+  const queries = [];
+  const scraper = load('scraper', {
+    './fingerprint-match': conflicts, './scoring': scoring, './scrape-diagnostics': load('scrape-diagnostics'),
+    './sources': { extractCandidates: () => [{artist:'',title:''}], searchAcoustid: async () => [{...original,album:'Album',score:1,source:'acoustid'}],
+      searchQQMusic: async keyword => {queries.push(keyword);return [{...original,album:'Other album',score:0,source:'qqmusic'}];}, enrichFromChineseSources: async()=>({}) },
+    './t2s': {toSimplified:s=>s}, './cache': {cacheGet:async()=>null,cacheSet:()=>assert.fail('preview must not cache')},
+    './ratelimit': {rateLimitWait:async()=>{}}, './circuit': {circuitIsOpen:()=>false,circuitSuccess(){},circuitFailure(){}},
+  },{songloft:{songs:{getById:async()=>({type:'local',fingerprint:'test',duration:292})},log:{info(){},warn(){}}}});
+  const result=await scraper.doScrape(42,{enable_acoustid:true,enable_qqmusic:true,qqmusic_api_url:'https://example.test',score_threshold:0.7}, {includeCandidates:true,allowLowScore:true,skipCache:true});
+  assert.deepEqual(queries,['孙楠 风往北吹']);
+  assert.equal(result.source,'acoustid');
+  assert.equal(result.candidates.some(c=>c.source==='qqmusic'),true);
 });

@@ -38,6 +38,10 @@ export interface ScrapeResult {
   cover_data?: string;  // base64
   source: string;
   score: number;
+  score_kind?: 'fingerprint' | 'text';
+  fingerprint_conflict?: boolean;
+  candidates?: ScrapeResult[];
+  source_diagnostics?: Record<string, SourceDiagnostic>;
   fileWriteStatus?: string;
   /** 各源得分明细 */
   sourceScores?: Record<string, number>;
@@ -61,7 +65,7 @@ export async function scrapeSong(songId: number, config?: ScraperConfig, opts?: 
 // 内部实现
 // ============================================================
 
-export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skipCache?: boolean; allowLowScore?: boolean; onDiagnostic?: (reason: string) => void }): Promise<ScrapeResult | null> {
+export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skipCache?: boolean; allowLowScore?: boolean; includeCandidates?: boolean; onDiagnostic?: (reason: string) => void }): Promise<ScrapeResult | null> {
   // 1. 获取歌曲信息
   const song = await songloft.songs.getById(songId);
   if (!song) {
@@ -91,6 +95,28 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   const candidate = candidates[0];
   let fingerprintCandidate: ScrapeResult | null = null;
   let fingerprintConflict = false;
+  const previews: ScrapeResult[] = [];
+  const diagnostics: Record<string, SourceDiagnostic> = {};
+  for (const [source, enabled, url] of [
+    ['acoustid', cfg.enable_acoustid, true], ['netease', cfg.enable_netease, cfg.netease_api_url],
+    ['qqmusic', cfg.enable_qqmusic, cfg.qqmusic_api_url], ['kugou', cfg.enable_kugou, cfg.kugou_api_url],
+    ['migu', cfg.enable_migu, true], ['kuwo', cfg.enable_kuwo, true],
+  ] as const) if (enabled) diagnostics[source] = { count: 0, score: 0, ...(!url ? { error: '未配置接口地址' } : {}) };
+  const remember = (result: ScrapeResult) => {
+    if (!opts?.includeCandidates || !result.title.trim()) return;
+    const key = (r: ScrapeResult) => JSON.stringify([r.source, r.artist, r.title, r.album]);
+    const old = previews.findIndex(r => key(r) === key(result));
+    if (old >= 0) { if (previews[old].score <= result.score) previews[old] = result; }
+    else previews.push(result);
+    // Bound response size even when reverse queries return many duplicates.
+    const ranked = previews.filter(r => r.source === result.source).sort((a,b) => b.score-a.score);
+    for (const excess of ranked.slice(5)) previews.splice(previews.indexOf(excess), 1);
+  };
+  const finish = (result: ScrapeResult | null): ScrapeResult | null => {
+    if (!opts?.includeCandidates) return result;
+    const selected = result || previews[0];
+    return selected ? { ...selected, candidates: previews, source_diagnostics: diagnostics } : null;
+  };
 
   // 缓存字段辅助：entry 带 enriched 标记，避免「源本来就没有 genre」时每次命中都重跑 enrich
   const toCacheEntry = (r: { artist: string; title: string; album: string; cover_url?: string; lyrics?: string; genre?: string; year?: string; track?: string; source: string; score: number }) => ({
@@ -124,11 +150,17 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
   if (!cfg.enable_acoustid) {
     songloft.log.info(`[scraper] AcoustID 未启用 (cfg.enable_acoustid=${cfg.enable_acoustid})`);
   } else if (!song.fingerprint) {
+    if (diagnostics.acoustid) diagnostics.acoustid.error = '尚无音频指纹';
     opts?.onDiagnostic?.("尚无音频指纹，已尝试文本搜索");
     songloft.log.info(`[scraper] AcoustID 跳过: 歌曲无指纹 (主程序扫描后异步计算，请稍后重试)`);
   } else {
     await rateLimitWait('acoustid');
-    const acoustidResults = await searchAcoustid(song.fingerprint, song.fingerprint_duration || song.duration || 0, cfg.acoustid_api_key, opts?.onDiagnostic);
+    const acoustidResults = await searchAcoustid(song.fingerprint, song.fingerprint_duration || song.duration || 0, cfg.acoustid_api_key, reason => {
+      diagnostics.acoustid = { count: 0, score: 0, error: reason };
+      opts?.onDiagnostic?.(reason);
+    });
+    diagnostics.acoustid = { ...diagnostics.acoustid, count: acoustidResults.length, score: Math.max(0,...acoustidResults.map(r=>r.score)) };
+    for (const r of acoustidResults) remember({ ...buildResult(songId,r,candidate,{}), fingerprint_conflict: fingerprintConflicts(candidates,r) });
     if (acoustidResults.length > 0) {
       const best = acoustidResults.reduce((a, b) => a.score > b.score ? a : b);
       fingerprintConflict = best.score >= cfg.score_threshold && fingerprintConflicts(candidates, best);
@@ -155,15 +187,24 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
         const result = buildResult(songId, best, candidate, {});
         // 无文字关键词时不能共享空键缓存，避免不同未知歌曲串用识别结果。
-        if (candidate.title) await cacheSet(candidate.artist, candidate.title, toCacheEntry(result));
-        return result;
+        if (candidate.title && !opts?.includeCandidates) await cacheSet(candidate.artist, candidate.title, toCacheEntry(result));
+        if (!opts?.includeCandidates) return result;
+        fingerprintCandidate = result;
+        remember(result);
       }
     }
   }
 
   // 3. 文本搜索兜底（多源并发）：先用第一个候选词搜索，若得分不佳且有反向候选则重试
+  // A strong fingerprint can supply missing keywords for manual source comparison.
+  // Do not use conflicted labels to rewrite known search identity.
+  if (opts?.includeCandidates && !candidate.title && fingerprintCandidate && !fingerprintConflict && fingerprintCandidate.score >= cfg.score_threshold) {
+    candidate.artist = fingerprintCandidate.artist;
+    candidate.title = fingerprintCandidate.title;
+  }
   if (!candidate.title) {
-    if (fingerprintCandidate) return fingerprintCandidate;
+    for (const source of Object.keys(diagnostics)) if (source !== 'acoustid') diagnostics[source].error = '缺少可用的歌名或文件名，未发起文字搜索';
+    if (fingerprintCandidate || previews.length) return finish(fingerprintCandidate);
     opts?.onDiagnostic?.("音频指纹未能识别，且无法从歌曲信息或文件名确定搜索关键词");
     songloft.log.warn(`[scraper] 无法确定搜索关键词: ${songId}`);
     return null;
@@ -171,7 +212,6 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
 
   let bestResult: ScrapeResult | null = fingerprintCandidate;
   let bestScore = fingerprintCandidate?.score ?? -1;
-  const diagnostics: Record<string, SourceDiagnostic> = {};
 
   for (let ci = 0; ci < candidates.length; ci++) {
     const c = candidates[ci];
@@ -186,6 +226,7 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
       for (const r of results) {
         const s = scoreMatch({ ...c, duration: song.duration }, r);
         r.score = s;
+        remember(buildResult(songId, r, c, {}));
         if (s > srcBestScore) srcBestScore = s;
       }
       sourceScores[sourceName] = srcBestScore;
@@ -275,20 +316,20 @@ export async function doScrape(songId: number, cfg: ScraperConfig, opts?: { skip
     for (const [source, value] of Object.entries(diagnostics)) opts?.onDiagnostic?.(formatSourceDiagnostic(source, value, cfg.score_threshold));
     if (bestResult) opts?.onDiagnostic?.(`最佳候选来自${sourceLabel(bestResult.source)}，得分 ${bestScore.toFixed(2)}；${opts?.allowLowScore ? '仅供预览，请人工核对，尚未保存' : '未采用，未保存'}`);
     songloft.log.info(`[scraper] 最佳得分 ${bestScore.toFixed(2)} 低于阈值 ${cfg.score_threshold}，${opts?.allowLowScore && bestResult ? '返回人工预览' : '刮削失败'}`);
-    return opts?.allowLowScore ? bestResult : null;
+    return finish(opts?.allowLowScore ? bestResult : null);
   }
 
   if (fingerprintConflict) {
     // A strong fingerprint/text disagreement is ambiguous. Manual previews can
     // show text candidates with the conflict, but batches must never write them.
-    return opts?.allowLowScore ? bestResult : null;
+    return finish(opts?.allowLowScore ? bestResult : null);
   }
 
   // 写入缓存（文本搜索结果自带 genre/year/track，视为已补全）
-  await cacheSet(candidate.artist, candidate.title, toCacheEntry(bestResult));
+  if (!opts?.includeCandidates) await cacheSet(candidate.artist, candidate.title, toCacheEntry(bestResult));
 
   songloft.log.info(`[scraper] 选用 ${bestResult.source} (${bestResult.score.toFixed(2)})`);
-  return bestResult;
+  return finish(bestResult);
 }
 
 function buildResult(
@@ -309,6 +350,7 @@ function buildResult(
     cover_url: best.cover_url,
     source: best.source,
     score: best.score,
+    score_kind: best.source === 'acoustid' ? 'fingerprint' : 'text',
     sourceScores,
   };
 }

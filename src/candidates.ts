@@ -21,12 +21,16 @@ function stripTrack(value: string, paired: boolean): string {
   return result.trim();
 }
 
-function usableTitle(value: string): string { return GARBAGE_TITLE.test(value) ? '' : value; }
+function usableTitle(value: string): string {
+  const identity = /[?？\uFFFD]/.test(value) ? value.replace(/\(?\b(?:inst\.?|instrumental|live|remix)\b\)?/gi, '') : value;
+  return GARBAGE_TITLE.test(value) || !/[\p{L}\p{N}]/u.test(identity.replace(/\uFFFD/g,'')) ? '' : value;
+}
 
 export function extractCandidates(filePath: string, tags?: { artist?: string; title?: string }): Candidate[] {
   const cleanedArtist = cleanFilenameNoise(tags?.artist || '');
-  const artist = PROMOTIONAL_ARTIST.test(cleanedArtist) ? '' : cleanedArtist;
-  const title = cleanFilenameNoise(tags?.title || '');
+  const artist = PROMOTIONAL_ARTIST.test(cleanedArtist) || !/\p{L}/u.test(cleanedArtist.replace(/\uFFFD/g,'')) ? '' : cleanedArtist;
+  const rawTitle = cleanFilenameNoise(tags?.title || '');
+  const title = artist && /^\d+$/.test(rawTitle) ? rawTitle : usableTitle(rawTitle);
   if (artist && title && !GARBAGE_ARTIST.test(artist) && (!GARBAGE_TITLE.test(title) || /^\d+$/.test(title))) {
     return [{ artist, title }];
   }
